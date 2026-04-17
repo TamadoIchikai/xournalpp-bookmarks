@@ -1,16 +1,38 @@
-
 utf8_to_html = require("utf8_to_html")
 
 DEFAULT_EXPORT_PATH = "/tmp/temp"
+
+-- Helper function to get mouse position
+function get_mouse_position()
+  local hasLgi, lgi = pcall(require, "lgi")
+  if not hasLgi then
+    return nil, nil
+  end
+  local Gdk = lgi.Gdk
+  local display = Gdk.Display.get_default()
+  if not display then
+    return nil, nil
+  end
+  local seat = display:get_default_seat()
+  if not seat then
+    return nil, nil
+  end
+  local pointer = seat:get_pointer()
+  if not pointer then
+    return nil, nil
+  end
+  local screen, x, y = pointer:get_position()
+  return x, y
+end
 
 -- Register Toolbar
 function initUi()
 
   app.registerUi({menu="Previous Bookmark", toolbarId="CUSTOM_PREVIOUS_BOOKMARK", callback="search_bookmark", mode=-1, iconName="go-previous"})
-  app.registerUi({menu="New Bookmark", toolbarId="CUSTOM_NEW_BOOKMARK", callback="dialog_new_bookmark", iconName="bookmark-new-symbolic"})
+  app.registerUi({menu="New Bookmark", toolbarId="CUSTOM_NEW_BOOKMARK", callback="dialog_new_bookmark", iconName="bookmark-new-symbolic", ["accelerator"]="<Ctrl>B"})
   app.registerUi({menu="New Bookmark (No dialog)", toolbarId="CUSTOM_NEW_BOOKMARK_NO_DIALOG", callback="new_bookmark", iconName="bookmark-new-symbolic"})
   app.registerUi({menu="Next Bookmark", toolbarId="CUSTOM_NEXT_BOOKMARK", callback="search_bookmark", mode=1, iconName="go-next"})
-  app.registerUi({menu="View Bookmarks", toolbarId="CUSTOM_VIEW_BOOKMARKS", callback = "view_bookmarks", iconName="user-bookmarks-symbolic"})
+  app.registerUi({menu="View Bookmarks", toolbarId="CUSTOM_VIEW_BOOKMARKS", callback = "view_bookmarks", iconName="user-bookmarks-symbolic", ["accelerator"]="<Ctrl><Shift>B"})
   app.registerUi({menu="Export to PDF with Bookmarks", toolbarId="CUSTOM_EXPORT_WITH_BOOKMARKS", callback="export", iconName="xopp-document-export-pdf"})
 
   sep = package.config:sub(1,1)
@@ -26,15 +48,21 @@ function new_bookmark(name)
 
   local currentPage = structure.currentPage
   local currentLayerID = structure.pages[currentPage].currentLayer
+  local layerCount = #structure.pages[currentPage].layers
 
-  app.layerAction("ACTION_NEW_LAYER")
+  -- Go to the bottom layer first, then create new layer below it
+  app.setCurrentLayer(1)
+  app.activateAction("layer-new-below-current")
+  
   if type(name) == "string" then
     app.setCurrentLayerName("Bookmark::" .. name)
   else
     app.setCurrentLayerName("Bookmark::")
   end
   app.setLayerVisibility(false)
-  app.setCurrentLayer(currentLayerID)
+  
+  -- Restore the original layer (adding 1 because we added a layer below)
+  app.setCurrentLayer(currentLayerID + 1)
 end
 
 function delete_layer(page, layerID)
@@ -74,7 +102,7 @@ function search_bookmark(mode)
   until page == currentPage
 
   if nextBookmark == nil then
-    app.msgbox("No bookmark found.", {[1] = "Ok"})
+    app.openDialog("No bookmark found.", {"Ok"}, "")
     return
   end
 
@@ -97,11 +125,20 @@ function dialog_new_bookmark()
   assert(builder:add_from_file(sourcePath .. "dlgNew.glade"))
   local ui = builder.objects
   local dialog = ui.dlgNew
-  local title = "New bookmark"
+  local title = "Xournalpp - New bookmark"
   local defaultName=""
 
   dialog:set_title(title)
   ui.entryName:set_text(defaultName)
+
+  -- Position dialog at mouse location
+  local mouse_x, mouse_y = get_mouse_position()
+  if mouse_x and mouse_y then
+    dialog:show_all()
+    local width = dialog:get_allocated_width()
+    local height = dialog:get_allocated_height()
+    dialog:move(mouse_x - width / 2, mouse_y - height / 2)
+  end
 
   local function ok()
     local name = ui.entryName:get_text()
@@ -121,17 +158,18 @@ function dialog_new_bookmark()
     dialog:destroy()
   end
 
-  dialog:show_all()
+  if not mouse_x or not mouse_y then
+    dialog:show_all()
+  end
 end
 
 function view_bookmarks()
 
   local hasLgi, lgi = pcall(require, "lgi")
   if not hasLgi then
-    app.msgbox("You need to have the Lua lgi-module installed and included in your Lua package path in order view bookmarks\n", {[1]="OK"})
+    app.openDialog("You need to have the Lua lgi-module installed and included in your Lua package path in order view bookmarks\n", {"OK"}, "")
     return
   end
-
 
   local Gtk = lgi.require("Gtk", "3.0")
   local Gdk = lgi.Gdk
@@ -140,6 +178,8 @@ function view_bookmarks()
   assert(builder:add_from_file(sourcePath .. "dlgBookmarks.glade"))
   local ui = builder.objects
   local dialog = ui.dlgBookmarks
+  local title = "Xournalpp - Bookmarks Manager"
+  dialog:set_title(title)
 
   local column = {
     PAGE = 1,
@@ -155,7 +195,6 @@ function view_bookmarks()
     [column.LAYER_ID] = lgi.GObject.Type.UINT,
   }
 
-  -- they're going to be set immediately after
   local structure
   local numPages
 
@@ -164,20 +203,67 @@ function view_bookmarks()
     numPages = #structure.pages
     store:clear()
     for page=1, numPages do
+      local pageBookmarks = {}
+      
+      -- First, collect all bookmarks for this specific page
       for u,v in pairs(structure.pages[page].layers) do
         if v.name:sub(1,10) == "Bookmark::" then
-          if v.name:sub(11) == "" then
-            store:append({page, "(No name)", "", u})
-          else
-            store:append({page, v.name:sub(11), v.name:sub(11), u})
-          end
+          local displayName = v.name:sub(11)
+          if displayName == "" then displayName = "(No name)" end
+          
+          table.insert(pageBookmarks, {
+            page = page,
+            displayName = displayName,
+            name = v.name:sub(11),
+            layerID = u
+          })
         end
+      end
+      
+      -- Second, sort them alphabetically by their display name
+      table.sort(pageBookmarks, function(a, b)
+        return a.displayName:lower() < b.displayName:lower()
+      end)
+      
+      -- Third, append them to the store
+      for _, b in ipairs(pageBookmarks) do
+        store:append({b.page, b.displayName, b.name, b.layerID})
       end
     end
   end
 
   updateTable()
 
+  -- Create an editable text renderer for inline renaming
+  local nameRenderer = Gtk.CellRendererText { editable = true }
+  
+  function nameRenderer:on_edited(path_str, new_text)
+    -- Convert the string path into a real GtkTreePath so we can find the item!
+    local path = Gtk.TreePath.new_from_string(path_str)
+    local success, iter = store:get_iter(path)
+    
+    -- Handle LGI return type quirk (sometimes returns iter directly instead of boolean success)
+    if type(success) == "userdata" then iter = success end
+    
+    if iter then
+      local page = store[iter][column.PAGE]
+      local layerID = store[iter][column.LAYER_ID]
+      
+      -- Use the exact logic from the old "Edit" button
+      local current_structure = app.getDocumentStructure()
+      app.setCurrentPage(page)
+      local currentLayerID = current_structure.pages[page].currentLayer
+      
+      app.setCurrentLayer(layerID)
+      app.setCurrentLayerName("Bookmark::" .. new_text)
+      app.setCurrentLayer(currentLayerID)
+      
+      -- Update the UI Table to reflect the new name and re-sort
+      updateTable()
+    end
+  end
+
+  -- Initialize TreeView
   local treeView = Gtk.TreeView {
     model = store,
     Gtk.TreeViewColumn {
@@ -189,102 +275,69 @@ function view_bookmarks()
         {text = column.PAGE},
       },
     },
-    Gtk.TreeViewColumn {
-      title = "Name",
-      {
-        Gtk.CellRendererText { id = "nameColumn"},
-        {text = column.DISPLAY_NAME},
-      },
-    },
   }
+
+  -- Explicitly configure the Name column to guarantee correct layout order
+  local nameColumn = Gtk.TreeViewColumn { title = "Name" }
+  
+  -- 1. Pack the editable text on the LEFT, and do NOT let it expand
+  nameColumn:pack_start(nameRenderer, false)
+  nameColumn:add_attribute(nameRenderer, "text", column.DISPLAY_NAME)
+  
+  -- 2. Pack the dummy invisible renderer on the RIGHT, and DO let it expand to fill space
+  local dummyRenderer = Gtk.CellRendererText {}
+  nameColumn:pack_start(dummyRenderer, true)
+  
+  -- 3. Add the properly structured column to the treeView
+  treeView:append_column(nameColumn)
 
   ui.scrolledWindow:add(treeView)
 
-  function ui.btnNew.on_clicked()
-    local newPage, newName = edit_bookmark("New Bookmark", 1, "")
-    if newPage == nil then return end
-    app.setCurrentPage(newPage)
-    new_bookmark(newName)
-    updateTable()
+  function treeView:on_row_activated(path, tv_column)
+    local model = self:get_model()
+    local iter = model:get_iter(path)
+    if iter then
+      local page = model[iter][column.PAGE]
+      app.setCurrentPage(page)
+      app.scrollToPage(page)
+      dialog:destroy()
+    end
   end
 
-  function ui.btnEdit.on_clicked()
-    local model, data = treeView:get_selection():get_selected()
-    if data == nil then return end
-    local oldPage, oldName, oldLayerID = model[data][column.PAGE], model[data][column.NAME], model[data][column.LAYER_ID]
-    local newPage, newName = edit_bookmark("Edit Bookmark", oldPage, oldName)
+  local mouse_x, mouse_y = get_mouse_position()
+  if mouse_x and mouse_y then
+    dialog:show_all()
+    local width = dialog:get_allocated_width()
+    local height = dialog:get_allocated_height()
+    dialog:move(mouse_x - width / 2, mouse_y - height / 2)
+  end
 
-    if newPage == nil then return end
-    if oldPage == newPage then
-      app.setCurrentPage(oldPage)
-      local currentLayerID = structure.pages[oldPage].currentLayer
-      app.setCurrentLayer(oldLayerID)
-      app.setCurrentLayerName("Bookmark::" .. newName)
-      app.setCurrentLayer(currentLayerID)
-    else
-      delete_layer(oldPage, oldLayerID)
-      app.setCurrentPage(newPage)
-      new_bookmark(newName)
-    end
+  function ui.btnNew.on_clicked()
+    new_bookmark("")
     updateTable()
   end
 
   function ui.btnDelete.on_clicked()
-    local model, data = treeView:get_selection():get_selected()
-    if data == nil then return end
-    local page, layerID = model[data][column.PAGE], model[data][column.LAYER_ID]
+    local model, iter = treeView:get_selection():get_selected()
+    if not iter then return end
+    local page, layerID = model[iter][column.PAGE], model[iter][column.LAYER_ID]
     delete_layer(page, layerID)
     updateTable()
-  end
-
-  function ui.btnJumpTo.on_clicked()
-    local model, data = treeView:get_selection():get_selected()
-    if data == nil then return end
-    local page = model[data][column.PAGE]
-    app.setCurrentPage(page)
-    app.scrollToPage(page)
   end
 
   function ui.btnDone.on_clicked()
     dialog:destroy()
   end
 
-  function edit_bookmark(title, defaultPage, defaultName)
-    local builder = Gtk.Builder()
-    assert(builder:add_from_file(sourcePath .. "dlgEdit.glade"))
-    local ui = builder.objects
-    local dialog = ui.dlgEdit
-
-    returnData = {}
-
-    dialog:set_title(title)
-    ui.spbtPageNumber:set_range(1,numPages)
-    ui.spbtPageNumber:set_increments(1,10)
-    ui.spbtPageNumber:set_value(defaultPage)
-    ui.entryName:set_text(defaultName)
-
-    function ui.btnEditOk.on_clicked()
-      returnData[1] = math.floor(ui.spbtPageNumber:get_value() + 0.1)
-      returnData[2] = ui.entryName:get_text()
-      dialog:destroy()
-    end
-
-    function ui.btnEditCancel.on_clicked()
-      dialog:destroy()
-    end
-
-    dialog:run()
-    dialog:destroy()
-    return table.unpack(returnData)
+  if not mouse_x or not mouse_y then
+    dialog:show_all()
   end
-
-  dialog:show_all()
 end
 
 function export()
 
   if not os.execute("pdftk") then
-    app.msgbox("pdftk is missing.", {[1] = "OK"})
+    app.openDialog("pdftk is missing.", {"OK"}, "")
     return
   end
   local structure = app.getDocumentStructure()
@@ -309,13 +362,31 @@ function export()
   local file = io.open(tempData,"a+")
   local bookmarkTable = {}
   local numPages = #structure.pages
+  
+  -- Extract and Sort Exported Bookmarks by Page & Alphabetical Name
   for page=1, numPages do
+    local pageBookmarks = {}
     for u,v in pairs(structure.pages[page].layers) do
       if v.name:sub(1,10) == "Bookmark::" then
-        table.insert(bookmarkTable,{page = page, name = utf8_to_html(v.name:sub(11))})
+        table.insert(pageBookmarks, {
+          page = page, 
+          name = utf8_to_html(v.name:sub(11)),
+          rawName = v.name:sub(11)
+        })
       end
     end
+    
+    table.sort(pageBookmarks, function(a, b)
+      local aName = a.rawName == "" and "(No name)" or a.rawName
+      local bName = b.rawName == "" and "(No name)" or b.rawName
+      return aName:lower() < bName:lower()
+    end)
+    
+    for _, b in ipairs(pageBookmarks) do
+      table.insert(bookmarkTable, b)
+    end
   end
+  
   for u, bookmark in pairs(bookmarkTable) do
     file:write("BookmarkBegin\n")
     file:write("BookmarkTitle: " .. bookmark.name .. "\n")
