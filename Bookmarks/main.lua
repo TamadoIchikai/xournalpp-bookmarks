@@ -89,8 +89,10 @@ function new_bookmark(name)
 
   -- Automatically select the newly created bookmark
   if refs and #refs > 0 then
+    local currentPage = app.getDocumentStructure().currentPage
     app.clearSelection()
     app.addToSelection(refs)
+    app.scrollToPage(currentPage)
   end
 end
 
