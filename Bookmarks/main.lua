@@ -23,16 +23,26 @@ end
 
 -- Centralized Bookmark Styling
 function get_bookmark_style(text, defaultFontName)
-  local baseFontFamily = defaultFontName:gsub(" Regular$", ""):gsub(" Bold$", ""):gsub(" Italic$", "")
+  -- Strip out any existing variants including "Black"
+  local baseFontFamily = defaultFontName:gsub(" Regular$", ""):gsub(" Bold$", ""):gsub(" Italic$", ""):gsub(" Black$", "")
   local fontName = baseFontFamily
   local fontSize = 25.0
 
   if text:match("^%*") then
-    fontName = baseFontFamily .. " Bold"
+    if baseFontFamily == "Segoe UI" then
+      fontName = baseFontFamily .. " Black"
+    else
+      fontName = baseFontFamily .. " Bold"
+    end
+    fontSize = 25.0
   elseif text:match("^%-+>") then
     local depth = string.len(text:match("^(%-+)>"))
     if depth == 1 then
-      fontName = baseFontFamily .. " Italic"
+      if baseFontFamily == "Segoe UI" then
+        fontName = baseFontFamily .. " Bold"
+      else
+        fontName = baseFontFamily .. " Regular"
+      end
       fontSize = 20.0
     else
       fontName = baseFontFamily .. " Regular"
@@ -70,11 +80,18 @@ function new_bookmark(name)
 
   local newFontName, newFontSize = get_bookmark_style(name, fontName)
 
-  app.addTexts({
+  -- Add the text and capture the reference so we can select it
+  local refs = app.addTexts({
     texts = {
       { text = name, x = 20, y = 20, color = fontColor, font = { name = newFontName, size = newFontSize } }
     }
   })
+
+  -- Automatically select the newly created bookmark
+  if refs and #refs > 0 then
+    app.clearSelection()
+    app.addToSelection(refs)
+  end
 end
 
 function search_bookmark(mode)
