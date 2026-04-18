@@ -263,7 +263,85 @@ function view_bookmarks()
       }
     }
   }
-  
+
+  -- Manual Drag-to-Scroll implementation with Inertia Physics for Stylus users
+  local drag_active = false
+  local drag_start_y = 0
+  local scroll_start_val = 0
+  local last_y = 0
+  local velocity = 0
+  local scroll_tick = nil
+
+  local function stop_inertia()
+    if scroll_tick then
+      lgi.GLib.source_remove(scroll_tick)
+      scroll_tick = nil
+    end
+  end
+
+  function treeView:on_button_press_event(event)
+    if event.button == 1 then
+      drag_active = true
+      drag_start_y = event.y_root
+      last_y = event.y_root
+      scroll_start_val = ui.scrolledWindow:get_vadjustment():get_value()
+      velocity = 0
+      stop_inertia()
+    end
+    return false -- allow event to propagate to rows for selection/editing
+  end
+
+  function treeView:on_button_release_event(event)
+    if event.button == 1 then 
+      drag_active = false 
+      if math.abs(velocity) > 1.5 then
+        scroll_tick = lgi.GLib.timeout_add(lgi.GLib.PRIORITY_DEFAULT, 16, function()
+          if drag_active then return false end
+          
+          local vadj = ui.scrolledWindow:get_vadjustment()
+          local new_val = vadj:get_value() - velocity
+          
+          local lower_limit = vadj:get_lower()
+          local upper_limit = vadj:get_upper() - vadj:get_page_size()
+          
+          if new_val <= lower_limit then 
+            new_val = lower_limit
+            velocity = 0 
+          elseif new_val >= upper_limit then 
+            new_val = upper_limit
+            velocity = 0 
+          end
+          
+          vadj:set_value(new_val)
+          velocity = velocity * 0.90 -- Friction/Decay multiplier
+          
+          if math.abs(velocity) < 0.5 then
+            scroll_tick = nil
+            return false
+          end
+          return true
+        end)
+      end
+    end
+    return false
+  end
+
+  function treeView:on_motion_notify_event(event)
+    if drag_active then
+      velocity = event.y_root - last_y
+      last_y = event.y_root
+      
+      local dy = drag_start_y - event.y_root
+      local vadj = ui.scrolledWindow:get_vadjustment()
+      vadj:set_value(scroll_start_val + dy)
+      
+      -- If we moved a noticeable amount, consume the event so we don't accidentally drag-select multiple rows
+      if math.abs(dy) > 5 then return true end
+    end
+    return false
+  end
+
+
   ui.scrolledWindow:add(treeView)
 
   function treeView:on_row_activated(path)
@@ -283,6 +361,9 @@ function view_bookmarks()
     local model, iter = treeView:get_selection():get_selected()
     if iter then delete_bookmark(model[iter][column.PAGE], model[iter][column.REF]); updateTable() end
   end
+    
+  function dialog:on_destroy() stop_inertia() end
+
   function ui.btnDone:on_clicked() dialog:destroy() end
 
   local mx, my = get_mouse_position()
