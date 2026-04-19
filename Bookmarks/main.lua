@@ -202,10 +202,41 @@ function view_bookmarks()
     end
 
     table.sort(bookmarks, function(a, b) return a.page == b.page and a.y < b.y or a.page < b.page end)
-    for _, b in ipairs(bookmarks) do store:append({b.page, b.prefix, b.displayName, b.name, b.ref}) end
+    
+    local currentPage = app.getDocumentStructure().currentPage
+    local closest_exact_idx, closest_below_idx, closest_above_idx
+
+    for i, b in ipairs(bookmarks) do 
+      store:append({b.page, b.prefix, b.displayName, b.name, b.ref}) 
+      
+      -- Track nearest page indices based on Y-axis rules
+      if b.page == currentPage then
+        if not closest_exact_idx then closest_exact_idx = i end
+      elseif b.page < currentPage then
+        closest_below_idx = i -- continually updates, ending on the highest Y for this page
+      elseif b.page > currentPage then
+        if not closest_above_idx then closest_above_idx = i end -- locks on the lowest Y for this page
+      end
+    end
+
+    -- Determine overall best index
+    local best_idx = nil
+    if closest_exact_idx then
+      best_idx = closest_exact_idx
+    else
+      local dist_below = closest_below_idx and (currentPage - bookmarks[closest_below_idx].page) or math.huge
+      local dist_above = closest_above_idx and (bookmarks[closest_above_idx].page - currentPage) or math.huge
+      if dist_below <= dist_above and closest_below_idx then
+        best_idx = closest_below_idx
+      elseif closest_above_idx then
+        best_idx = closest_above_idx
+      end
+    end
+
+    return best_idx
   end
 
-  updateTable()
+  local initial_best_idx = updateTable()
 
   local nameRenderer = Gtk.CellRendererText { editable = true }
   function nameRenderer:on_edited(path_str, new_text)
@@ -369,6 +400,13 @@ function view_bookmarks()
   local mx, my = get_mouse_position()
   dialog:show_all()
   if mx and my then dialog:move(mx - dialog:get_allocated_width() / 2, my - dialog:get_allocated_height() / 2) end
+
+  -- Select and scroll to nearest bookmark upon opening the dialog
+  if initial_best_idx then
+    local path = lgi.Gtk.TreePath.new_from_string(tostring(initial_best_idx - 1))
+    treeView:get_selection():select_path(path)
+    treeView:scroll_to_cell(path, nil, true, 0.5, 0.0)
+  end
 end
 
 function export()
