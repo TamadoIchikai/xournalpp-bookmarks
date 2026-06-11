@@ -1,3 +1,4 @@
+# Moved to https://github.com/TamadoIchikai/xournalConfig
 # Instalation instruction
 - From [origin of this plugin](https://github.com/jereyes4/xournalpp-bookmarks)
 - Thanks for the wonderful plugin jereyes4!
